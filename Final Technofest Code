@@ -1,0 +1,246 @@
+#define BLYNK_TEMPLATE_ID "TMPL3wOIrLEXo"
+#define BLYNK_TEMPLATE_NAME "Petcare"
+#define BLYNK_AUTH_TOKEN "_MhPO3XsKo3g_QInVpF62ZH6ksU0iKs2"
+
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+#include <SPI.h>
+#include <WiFiS3.h>
+#include <BlynkSimpleWifi.h>
+
+#define USE_ARDUINO_INTERRUPTS true
+#include <PulseSensorPlayground.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Wire.h>
+#include <Adafruit_MLX90614.h>
+
+#define GPS_TX_PIN 2
+#define GPS_RX_PIN 3
+#define GSM_TX_PIN 7
+#define GSM_RX_PIN 6
+
+const int PULSE_SENSOR_PIN = A0;
+const int LED_PIN = 13;
+const int THRESHOLD = 550;
+
+SoftwareSerial gpsSerial(GPS_TX_PIN, GPS_RX_PIN);
+TinyGPSPlus gps;
+SoftwareSerial gsm(GSM_RX_PIN, GSM_TX_PIN);
+
+PulseSensorPlayground pulseSensor;
+
+Adafruit_MPU6050 mpu;
+
+Adafruit_MLX90614 mlx = Adafruit_MLX90614();
+
+float prevMagnitude = 0;
+float activitySum = 0;
+
+unsigned long startTime = 0;
+const unsigned long windowTime = 10000; 
+
+const int numReadings = 10;
+int bpmReadings[numReadings];
+int readIndex = 0;
+int total = 0;
+int averageBPM = 0;
+
+char ssid[] = "Nothing2a";
+char pass[] = "M4Digital";
+
+bool geofenceEnabled = false;
+
+int inactivityCounter = 0;
+const int inactivityThreshold = 1000;  // 1000 × 10 sec ≈ 166 minutes
+
+BLYNK_WRITE(V7)
+{
+  int toggleState = param.asInt();
+
+  if (toggleState == 1)
+  {
+    geofenceEnabled = true; 
+    sendSMS("Geofence Enabled");
+    Serial.println("Geofence Enabled");
+  }
+  else
+  {
+    geofenceEnabled = false;
+    sendSMS("Geofence Disabled");
+    Serial.println("Geofence Disabled");
+  }
+}
+
+BlynkTimer timer;
+
+void updateGPSData()
+{
+  while (gpsSerial.available() > 0)
+  {
+    gps.encode(gpsSerial.read());
+  }
+
+  if (gps.location.isValid())
+  {
+    float latitude = gps.location.lat();
+    float longitude = gps.location.lng();
+
+    Serial.print("Lat: ");
+    Serial.println(latitude);
+
+    Serial.print("Lng: ");
+    Serial.println(longitude);
+
+    Blynk.virtualWrite(V1, latitude);
+    Blynk.virtualWrite(V2, longitude);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Dog Activity Tracker Started");
+
+  gpsSerial.begin(9600);
+  gsm.begin(9600);
+  mlx.begin(); 
+
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+  timer.setInterval(1000L, updateGPSData);
+  timer.setInterval(10000L, sendBPM);
+
+  pulseSensor.analogInput(PULSE_SENSOR_PIN);
+  pulseSensor.blinkOnPulse(LED_PIN);
+  pulseSensor.setThreshold(THRESHOLD);
+
+  if (pulseSensor.begin()) {
+    Serial.println("PulseSensor Ready");
+  }
+
+  Wire.begin();
+  Wire.setClock(100000);
+  Wire.setWireTimeout(3000, true); 
+
+  if (!mpu.begin()) {
+    Serial.println("MPU6050 not found");
+    while (1);
+  }
+
+  mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+
+  startTime = millis();
+  delay(2000);
+}
+
+void sendBPM() {
+  int currentBPM = pulseSensor.getBeatsPerMinute();
+
+   if (pulseSensor.sawStartOfBeat())
+  {
+    total = total - bpmReadings[readIndex];
+    bpmReadings[readIndex] = currentBPM;
+    total = total + bpmReadings[readIndex];
+
+    readIndex++;
+    if (readIndex >= numReadings)
+      readIndex = 0;
+    
+    averageBPM = total / numReadings;
+
+    Serial.print("Average BPM: ");
+    Serial.println(averageBPM -20);
+
+    Blynk.virtualWrite(V3, averageBPM -20);
+  }
+
+}
+
+void sendSMS(String message)
+{
+  gsm.println("AT+CMGF=1");  
+  delay(1000);
+
+  gsm.println("AT+CMGS=\"+919008415003\""); 
+  delay(1000);
+
+  gsm.print(message);
+  delay(500);
+
+  gsm.write(26); // CTRL+Z to send
+  delay(3000);
+}
+
+void loop() {
+  int ambient_temp_c = mlx.readAmbientTempC();
+  int object_temp_f = mlx.readObjectTempF();
+  Serial.println((String) "Object Temperature = " + object_temp_f + " \xC2\xB0" + "F");
+  Serial.println((String) "Ambient Temperature = " + ambient_temp_c + " \xC2\xB0" + "C");
+  Blynk.virtualWrite(V4, object_temp_f);
+  Blynk.virtualWrite(V5, ambient_temp_c);
+
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+
+  float magnitude = sqrt(
+    a.acceleration.x * a.acceleration.x +
+    a.acceleration.y * a.acceleration.y +
+    a.acceleration.z * a.acceleration.z
+  );
+
+  float motionChange = abs(magnitude - prevMagnitude);
+  prevMagnitude = magnitude;
+
+  activitySum += motionChange;
+
+  String activityState;
+
+  if (motionChange < 0.15) {
+    activityState = "Resting";
+  }
+  else if (motionChange < 1.0) {
+    activityState = "Walking";
+  }
+  else {
+    activityState = "Running";
+  }
+
+  Serial.print("Activity: ");
+  Serial.println(activityState);
+  Blynk.virtualWrite(V0, activityState);
+
+  if (millis() - startTime > windowTime) {
+
+  Serial.println("----- 10 Second Summary -----");
+  Serial.print("Total Activity: ");
+  Serial.println(activitySum);
+
+  if (activitySum < 8) {
+
+    inactivityCounter++;   // increase count
+
+    Serial.print("Low Movement Count: ");
+    Serial.println(inactivityCounter);
+
+    if (inactivityCounter >= inactivityThreshold) {
+      Serial.println("Pet is Inactive (Long Duration)");
+      Blynk.virtualWrite(V6, "Inactive");
+    }
+
+  } 
+  else {
+
+    inactivityCounter = 0;   // reset if movement detected
+    Blynk.virtualWrite(V6, "Active");
+  }
+  Serial.println("-----------------------------");
+
+  activitySum = 0;
+  startTime = millis();
+}
+
+  delay(50); 
+
+  Blynk.run();
+  timer.run();
+}
