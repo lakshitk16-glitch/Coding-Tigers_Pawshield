@@ -1,0 +1,85 @@
+#define BLYNK_TEMPLATE_ID "TMPL3wOIrLEXo"
+#define BLYNK_TEMPLATE_NAME "Petcare"
+#define BLYNK_AUTH_TOKEN "_MhPO3XsKo3g_QInVpF62ZH6ksU0iKs2"
+
+#include <WiFiS3.h>
+#include <BlynkSimpleWifi.h>
+#include <SPI.h>
+#include <Servo.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+char ssid[] = "Nothing2a";
+char pass[] = "M4Digital";
+
+// -------- Servo --------
+Servo myServo;
+const int SERVO_PIN = 9;
+
+// -------- OLED --------
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// -------- Variables --------
+String petStatus = "Waiting...";
+
+// -------- Blynk Toggle V8 --------
+BLYNK_WRITE(V8)
+{
+  int toggleState = param.asInt();
+
+  if (toggleState == 1)
+  {
+    myServo.write(180);   // Move to 180°
+    delay(1000);
+    myServo.write(0);     // Back to 0°
+    Blynk.virtualWrite(V8, 0);
+  }
+}
+
+// -------- Read Pet Status from V0 --------
+BLYNK_WRITE(V0)
+{
+  petStatus = param.asString();
+
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 20);
+  display.print("Pet:");
+  display.setCursor(0, 45);
+  display.print(petStatus);
+  display.display();
+}
+
+void setup()
+{
+  Serial.begin(115200);
+
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  // Servo
+  myServo.attach(SERVO_PIN);
+  myServo.write(0);
+
+  // OLED
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
+  {
+    Serial.println("OLED not found");
+    while (1);
+  }
+
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setCursor(0, 20);
+  display.print("Petcare");
+  display.display();
+}
+
+void loop()
+{
+  Blynk.run();
+}
